@@ -1,0 +1,135 @@
+<!doctype html>
+<html>
+    <head>
+        <meta charset="utf-8" />
+        <title>react leak repro</title>
+        <script type="importmap">
+            {
+                "imports": {
+                    "react": "https://esm.sh/react@19.2.8",
+                    "react-dom/client": "https://esm.sh/react-dom@19.2.8/client"
+                }
+            }
+        </script>
+    </head>
+    <body>
+        <div id="root"></div>
+        <script type="module">
+            import {
+                useState,
+                useEffect,
+                useRef,
+                memo,
+                createElement as h
+            } from "react"
+            import { createRoot } from "react-dom/client"
+
+            // technically not part of the repro, but useful for probing the leak
+            function countPendingUpdates(domNode) {
+                if (!domNode) return null
+                const fiberKey = Object.keys(domNode).find((k) =>
+                    k.startsWith("__reactFiber$")
+                )
+                if (!fiberKey) return null
+                // hooks live on the parent component fiber, not the div's own fiber
+                let hook = domNode[fiberKey].return?.memoizedState
+                while (hook) {
+                    if (hook.queue && hook.queue.pending) {
+                        const pending = hook.queue.pending
+                        let count = 1
+                        let node = pending.next
+                        while (node !== pending) {
+                            count++
+                            node = node.next
+                        }
+                        return count
+                    }
+                    hook = hook.next
+                }
+                return 0
+            }
+
+            const Leaky = memo(function Leaky() {
+                const [value, setValue] = useState(42)
+                const ref = useRef(null)
+                const countRef = useRef(null)
+
+                useEffect(() => {
+                    // this is where the magic, I mean the leak, happens:
+                    // we keep scheduling updates even if the value is already 42
+                    // and they never get flushed by React
+                    const tick = setInterval(() => setValue(42), 16)
+
+                    // probing in a way that does not interfere with the leak
+                    const probe = setInterval(() => {
+                        const n = countPendingUpdates(ref.current)
+                        // writing to DOM because useState would cause a rerender and thus flush the pending updates, which would hide the leak
+                        if (n !== null) countRef.current.textContent = n
+                    }, 500)
+                    return () => {
+                        clearInterval(tick)
+                        clearInterval(probe)
+                    }
+                }, [])
+
+                return h(
+                    "div",
+                    { ref },
+                    h("h2", null, "leaky"),
+                    "value: " + value + " - pending: ",
+                    h("span", { ref: countRef }, "0")
+                )
+            })
+
+            const Fixed = memo(function Fixed() {
+                const [value, setValue] = useState(42)
+                const lastValueRef = useRef(42)
+                const ref = useRef(null)
+                const countRef = useRef(null)
+
+                useEffect(() => {
+                    const tick = setInterval(() => {
+                        // this is the workaround:
+                        // we only schedule updates if the value has actually changed
+                        if (lastValueRef.current !== 42) {
+                            lastValueRef.current = 42
+                            setValue(42)
+                        }
+                    }, 16)
+
+                    const probe = setInterval(() => {
+                        const n = countPendingUpdates(ref.current)
+                        if (n !== null) countRef.current.textContent = n
+                    }, 500)
+                    return () => {
+                        clearInterval(tick)
+                        clearInterval(probe)
+                    }
+                }, [])
+
+                return h(
+                    "div",
+                    { ref },
+                    h("h2", null, "fixed"),
+                    "value: " + value + " - pending: ",
+                    h("span", { ref: countRef }, "0")
+                )
+            })
+
+            function BusySibling() {
+                const [n, setN] = useState(0)
+                useEffect(() => {
+                    const id = setInterval(() => setN((x) => x + 1), 16)
+                    return () => clearInterval(id)
+                }, [])
+                return h("div", null, "unrelated sibling tick: " + n)
+            }
+
+            function App() {
+                return h("div", null, h(Leaky), h(Fixed), h(BusySibling))
+            }
+
+            createRoot(document.getElementById("root")).render(h(App))
+        </script>
+    </body>
+</html>
