@@ -4,8 +4,9 @@ Minimal repro: a `useState` setter called repeatedly with a value that never
 actually changes leaks memory, even while other components in the tree keep
 re-rendering normally.
 
-Open `react-eager-bailout-leak-repro.html` in a browser (loads React 19 from
-esm.sh via an import map).
+Open `repro.html` in a browser (loads React 19 from
+esm.sh via an import map), or try it live at
+https://ianshade.github.io/react-eager-bailout-leak-repro/.
 
 ## Why
 
